@@ -26,7 +26,11 @@
 
   function withPowerUps(level, positions) {
     positions.forEach(([x, y]) => {
-      if (level.rows[y] && level.rows[y][x] !== undefined) level.rows[y][x] = 9;
+      let blockY = y;
+      const solid = (value) => [1, 2, 3, 8, 11, 12].includes(value);
+      if (solid(level.rows[blockY + 1]?.[x])) blockY = Math.max(1, blockY - 3);
+      while (blockY > 1 && solid(level.rows[blockY + 1]?.[x])) blockY--;
+      if (level.rows[blockY] && level.rows[blockY][x] !== undefined) level.rows[blockY][x] = 11;
     });
     return level;
   }

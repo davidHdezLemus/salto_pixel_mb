@@ -41,7 +41,7 @@ Globales:
 
 - `index.html`: entrada principal.
 - `styles.css`: estilos de HUD, menu, canvas y controles tactiles.
-- `game.js`: motor del juego, fisica, render, input, enemigos y cooperativo.
+- `js/`: componentes del juego (motor, físicas, render, input, enemigos y red).
 - `assets/used/`: assets usados por el juego.
 - `levels/tools.js`: helpers para construir y registrar fases.
 - `levels/level-01.js` a `levels/level-07.js`: fases individuales.
@@ -65,6 +65,8 @@ Los tipos de tile actuales son:
 - `8`: nube atravesable desde abajo.
 - `9`: seta roja.
 - `10`: Koopa verde.
+- `11`: bloque sorpresa activo con power-up.
+- `12`: bloque sorpresa usado, solido y no rompible.
 
 ## Estado
 

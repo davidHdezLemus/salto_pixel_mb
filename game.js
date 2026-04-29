@@ -439,6 +439,22 @@
         if (this.dead || this.state === "Dead") frame = 6;
         else if (!this.onGround) frame = this.powered ? 13 : 5;
         else if (Math.abs(this.vx) > 18) frame = base + 1 + Math.floor(this.animTime * 11) % 3;
+        if (!this.powered) {
+          const sx = frame * MARIO_FRAME + 6;
+          const sy = 14;
+          const sw = 18;
+          const sh = 18;
+          ctx.save();
+          if (this.facing < 0) {
+            ctx.translate(x + this.w, y);
+            ctx.scale(-1, 1);
+            ctx.drawImage(this.spriteSheet, sx, sy, sw, sh, 0, 0, TILE, TILE);
+          } else {
+            ctx.drawImage(this.spriteSheet, sx, sy, sw, sh, x, y, TILE, TILE);
+          }
+          ctx.restore();
+          return;
+        }
         const drawX = x - 4;
         const drawY = y - 2;
         ctx.save();
