@@ -9,7 +9,10 @@
     const FRICTION = 1200;
     const MAX_SPEED = 245;
     const JUMP = 760;
-    const NETWORK_KEY = "pixel_coop_rooms";
+    const PEER_CONFIG = {
+      debug: 1,
+      config: { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }] }
+    };
 
     const $ = (id) => document.getElementById(id);
     const canvas = $("gameCanvas");
@@ -680,110 +683,83 @@
 
     class NetworkManager {
       constructor() {
-        this.channel = "BroadcastChannel" in window ? new BroadcastChannel("pixel_coop_channel") : null;
-        if (this.channel) this.channel.onmessage = () => this.onRemoteChange && this.onRemoteChange();
-        window.addEventListener("storage", (e) => {
-          if (e.key === NETWORK_KEY && this.onRemoteChange) this.onRemoteChange();
-        });
+        this.peer = null;
+        this.conn = null;
+        this.onMessage = null;
+        this.onGuestConnect = null;
       }
 
-      readRooms() {
-        try {
-          return JSON.parse(localStorage.getItem(NETWORK_KEY) || "{}");
-        } catch {
-          return {};
-        }
-      }
-
-      writeRooms(rooms) {
-        localStorage.setItem(NETWORK_KEY, JSON.stringify(rooms));
-        if (this.channel) this.channel.postMessage({ type: "rooms" });
-      }
-
-      token() {
+      _roomCode() {
         const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
         const part = () => Array.from({ length: 4 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
         return `${part()}-${part()}-${part()}`;
       }
 
-      createRoom() {
-        const rooms = this.readRooms();
-        let token = this.token();
-        while (rooms[token]) token = this.token();
-        rooms[token] = {
-          token,
-          state: "hosting",
-          host: true,
-          guest: false,
-          started: false,
-          updatedAt: Date.now(),
-          snapshot: null
-        };
-        this.writeRooms(rooms);
-        return token;
+      _waitOpen(peer) {
+        return new Promise((res, rej) => {
+          if (peer.open) { res(peer.id); return; }
+          peer.once("open", res);
+          peer.once("error", rej);
+        });
       }
 
-      joinRoom(token) {
-        if (!/^[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(token)) return { ok: false, error: "Token inválido" };
-        const rooms = this.readRooms();
-        const room = rooms[token];
-        if (!room) return { ok: false, error: "Sala no encontrada" };
-        if (room.guest) return { ok: false, error: "Sala llena" };
-        room.guest = true;
-        room.state = "lobby";
-        room.updatedAt = Date.now();
-        rooms[token] = room;
-        this.writeRooms(rooms);
-        return { ok: true };
+      _waitConn(conn) {
+        return new Promise((res, rej) => {
+          if (conn.open) { res(); return; }
+          conn.once("open", res);
+          conn.once("error", rej);
+        });
       }
 
-      room(token) {
-        return this.readRooms()[token] || null;
+      _attach(conn) {
+        this.conn = conn;
+        conn.on("data", (data) => {
+          if (!this.onMessage) return;
+          try {
+            const msg = typeof data === "string" ? JSON.parse(data) : data;
+            this.onMessage(msg);
+          } catch {}
+        });
+        conn.on("close", () => { if (this.onMessage) this.onMessage({ t: "disconnect" }); });
       }
 
-      patchRoom(token, patch) {
-        const rooms = this.readRooms();
-        if (!rooms[token]) return null;
-        rooms[token] = { ...rooms[token], ...patch, updatedAt: Date.now() };
-        this.writeRooms(rooms);
-        return rooms[token];
-      }
-    }
-
-    class LobbyManager {
-      constructor(network) {
-        this.network = network;
-        this.role = null;
-        this.token = "";
-        this.error = "";
-        this.network.onRemoteChange = () => {
-          if (game && game.netToken) {
-            const room = game.network.room(game.netToken);
-            if (game.netRole === "guest" && game.state !== "playing" && room && room.started) {
-              game.startGuestNetwork();
-            }
-            game.renderMenu();
-          }
-        };
+      async openRoom() {
+        if (!window.Peer) throw new Error("PeerJS no disponible. Necesitas conexión a internet.");
+        this.destroy();
+        const code = this._roomCode();
+        this.peer = new Peer(code, PEER_CONFIG);
+        await this._waitOpen(this.peer);
+        this.peer.on("connection", async (conn) => {
+          if (this.conn) { conn.close(); return; }
+          try {
+            await this._waitConn(conn);
+            this._attach(conn);
+            if (this.onGuestConnect) this.onGuestConnect();
+          } catch {}
+        });
+        this.peer.on("error", () => { if (this.onMessage) this.onMessage({ t: "disconnect" }); });
+        return this.peer.id;
       }
 
-      host() {
-        this.role = "host";
-        this.token = this.network.createRoom();
-        this.error = "";
-        return this.token;
+      async joinRoom(code) {
+        if (!window.Peer) throw new Error("PeerJS no disponible. Necesitas conexión a internet.");
+        this.destroy();
+        const clean = String(code).trim().toLowerCase();
+        this.peer = new Peer(undefined, PEER_CONFIG);
+        await this._waitOpen(this.peer);
+        const conn = this.peer.connect(clean, { reliable: true });
+        await this._waitConn(conn);
+        this._attach(conn);
       }
 
-      join(token) {
-        const result = this.network.joinRoom(token.trim().toUpperCase());
-        if (result.ok) {
-          this.role = "guest";
-          this.token = token.trim().toUpperCase();
-          this.error = "";
-        } else {
-          this.error = result.error;
-        }
-        return result;
+      send(msg) {
+        if (this.conn && this.conn.open) this.conn.send(JSON.stringify(msg));
+      }
+
+      destroy() {
+        if (this.peer) { try { this.peer.destroy(); } catch {} }
+        this.peer = null;
+        this.conn = null;
       }
     }
 
@@ -806,16 +782,9 @@
       }
 
       syncNetwork() {
-        if (!this.game.netToken || this.game.mode !== "network") return;
-        const room = this.game.network.room(this.game.netToken);
-        if (!room) {
-          this.game.showMessage("Error de red", "Sala no encontrada o anfitrión desconectado.");
-          return;
-        }
+        if (this.game.mode !== "network" || !this.game.netToken) return;
         if (this.game.netRole === "host") {
-          this.game.network.patchRoom(this.game.netToken, { snapshot: this.game.snapshot(), started: this.game.state === "playing" });
-        } else if (room.snapshot) {
-          this.game.applyGuestSnapshot(room.snapshot);
+          this.game.network.send({ t: "snapshot", data: this.game.snapshot() });
         }
       }
     }
@@ -825,7 +794,6 @@
         this.input = new InputManager();
         this.sound = new SoundManager();
         this.network = new NetworkManager();
-        this.lobby = new LobbyManager(this.network);
         this.multi = new MultiplayerManager(this);
         this.camera = new Camera();
         this.levelIndex = 0;
@@ -834,6 +802,9 @@
         this.mode = "solo";
         this.netRole = null;
         this.netToken = "";
+        this.netGuestConnected = false;
+        this.netError = "";
+        this._guestInput = null;
         this.state = "start";
         this.menuView = "main";
         this.menuVisible = true;
@@ -955,33 +926,70 @@
         if (action === "coopLocal") this.menuView = "local";
         if (action === "startLocal") this.start("local");
         if (action === "coopNet") this.menuView = "network";
-        if (action === "network") this.menuView = "network";
+        if (action === "network") {
+          if (this.state !== "playing") {
+            this.network.destroy();
+            this.netRole = null;
+            this.netToken = "";
+            this.netGuestConnected = false;
+            this.mode = "solo";
+          }
+          this.menuView = "network";
+        }
         if (action === "host") this.menuView = "createHost";
         if (action === "generateToken") {
-          this.netToken = this.lobby.host();
           this.netRole = "host";
           this.mode = "network";
-          this.menuView = "hostLobby";
+          this.netGuestConnected = false;
+          this.netError = "";
+          this.menuView = "hostConnecting";
+          this.renderMenu();
+          this.network.openRoom()
+            .then((code) => {
+              this.netToken = code;
+              this.network.onGuestConnect = () => {
+                this.netGuestConnected = true;
+                this.network.onMessage = (msg) => this.handleNetMessage(msg);
+                this.renderMenu();
+              };
+              this.menuView = "hostLobby";
+              this.renderMenu();
+            })
+            .catch((err) => {
+              this.netError = err.message || "Error de conexión";
+              this.netRole = null;
+              this.mode = "solo";
+              this.menuView = "network";
+              this.renderMenu();
+            });
+          return;
         }
         if (action === "join") this.menuView = "join";
         if (action === "joinSubmit") {
-          const token = $("joinToken").value;
-          const result = this.lobby.join(token);
-          if (result.ok) {
-            this.netToken = this.lobby.token;
-            this.netRole = "guest";
-            this.mode = "network";
-            this.menuView = "guestLobby";
-          }
+          const token = $("joinToken").value.trim().toUpperCase();
+          if (!token) return;
+          this.netError = "";
+          this.menuView = "guestConnecting";
+          this.renderMenu();
+          this.network.joinRoom(token.toLowerCase())
+            .then(() => {
+              this.netToken = token;
+              this.netRole = "guest";
+              this.mode = "network";
+              this.network.onMessage = (msg) => this.handleNetMessage(msg);
+              this.menuView = "guestLobby";
+              this.renderMenu();
+            })
+            .catch((err) => {
+              this.netError = err.message || "No se pudo conectar. Verifica el código.";
+              this.menuView = "join";
+              this.renderMenu();
+            });
+          return;
         }
         if (action === "startNetwork") {
-          this.network.patchRoom(this.netToken, { started: true, state: "playing" });
+          this.network.send({ t: "start" });
           this.start("network");
-          this.netRole = "host";
-        }
-        if (action === "refreshLobby") {
-          const room = this.network.room(this.netToken);
-          if (this.netRole === "guest" && room && room.started) this.startGuestNetwork();
         }
         if (action === "reset") this.start(this.mode);
         if (action === "pause") this.togglePause();
@@ -1005,10 +1013,22 @@
         this.sound.startMusic();
       }
 
+      handleNetMessage(msg) {
+        if (msg.t === "start" && this.netRole === "guest") {
+          this.startGuestNetwork();
+        } else if (msg.t === "snapshot" && this.state === "playing" && this.netRole === "guest") {
+          this.applyGuestSnapshot(msg.data);
+        } else if (msg.t === "input" && this.netRole === "host") {
+          this._guestInput = msg.input;
+        } else if (msg.t === "disconnect") {
+          this.showMessage("Desconectado", "El otro jugador se desconectó.");
+          if (this.state === "playing") { this.state = "paused"; this.sound.stopMusic(); }
+        }
+      }
+
       renderMenu() {
         $("menu").classList.toggle("hidden", !this.menuVisible);
         const body = $("menuBody");
-        const room = this.netToken ? this.network.room(this.netToken) : null;
         const mainItems = [
           ["start", "Iniciar juego"],
           ["coop", "Cooperativo"],
@@ -1030,7 +1050,9 @@
           local: "Coop local",
           network: "Coop en red",
           createHost: "Crear partida",
+          hostConnecting: "Creando sala…",
           hostLobby: "Lobby anfitrión",
+          guestConnecting: "Conectando…",
           guestLobby: "Lobby invitado",
           join: "Unirse",
           controls: "Controles"
@@ -1045,22 +1067,29 @@
           return;
         }
         if (this.menuView === "join") {
-          const error = this.lobby.error ? `<p class="muted" style="color: var(--danger)">${this.lobby.error}</p>` : "";
+          const error = this.netError ? `<p class="muted" style="color: var(--danger)">${this.netError}</p>` : "";
           body.innerHTML = `<input id="joinToken" maxlength="14" placeholder="A7F3-K9P2-Q4LM">${error}${this.buttons([["joinSubmit", "Entrar al lobby"], ["network", "Volver"]])}`;
           return;
         }
         if (this.menuView === "createHost") {
-          body.innerHTML = `<p class="muted">Genera un token de sala y compártelo con el segundo jugador.</p>${this.buttons([["generateToken", "Generar token"], ["network", "Volver"]])}`;
+          body.innerHTML = `<p class="muted">Genera un código de sala y compártelo con el segundo jugador.</p>${this.buttons([["generateToken", "Generar sala"], ["network", "Volver"]])}`;
+          return;
+        }
+        if (this.menuView === "hostConnecting") {
+          body.innerHTML = `<p class="muted">Creando sala con PeerJS…</p>${this.buttons([["network", "Cancelar"]])}`;
           return;
         }
         if (this.menuView === "hostLobby") {
-          const guest = room && room.guest;
-          body.innerHTML = `<p class="muted">Anfitrión: Jugador 1</p><span class="token">${this.netToken}</span><p class="muted">Invitado: ${guest ? "conectado" : "esperando..."}</p><button data-action="startNetwork" ${guest ? "" : "disabled"}>Empezar partida</button><button data-action="refreshLobby">Actualizar lobby</button><button data-action="network">Volver</button>`;
+          const guest = this.netGuestConnected;
+          body.innerHTML = `<p class="muted">Anfitrión: Jugador 1</p><span class="token">${this.netToken}</span><p class="muted">Invitado: ${guest ? "conectado ✓" : "esperando…"}</p><button data-action="startNetwork" ${guest ? "" : "disabled"}>Empezar partida</button><button data-action="network">Volver</button>`;
+          return;
+        }
+        if (this.menuView === "guestConnecting") {
+          body.innerHTML = `<p class="muted">Conectando con el anfitrión…</p>${this.buttons([["network", "Cancelar"]])}`;
           return;
         }
         if (this.menuView === "guestLobby") {
-          const started = room && room.started;
-          body.innerHTML = `<p class="muted">Conectado como Jugador 2.</p><span class="token">${this.netToken}</span><p class="muted">${started ? "La partida ya puede empezar." : "Esperando a que el anfitrión pulse empezar."}</p><button data-action="refreshLobby">${started ? "Entrar a partida" : "Actualizar lobby"}</button><button data-action="network">Volver</button>`;
+          body.innerHTML = `<p class="muted">Conectado como Jugador 2.</p><span class="token">${this.netToken}</span><p class="muted">Esperando a que el anfitrión pulse empezar…</p>${this.buttons([["network", "Volver"]])}`;
           return;
         }
         body.innerHTML = this.buttons(templates[this.menuView] || templates.main);
@@ -1084,11 +1113,12 @@
           return this.input.playerControls(p.id);
         });
         if (this.mode === "network") {
-          const room = this.network.room(this.netToken);
-          if (this.netRole === "host" && room && room.guestInput) controls[1] = room.guestInput;
+          if (this.netRole === "host") {
+            controls[1] = this._guestInput || { left: false, right: false, jump: false };
+          }
           if (this.netRole === "guest") {
+            this.network.send({ t: "input", input: controls[1] });
             controls[0] = { left: false, right: false, jump: false };
-            this.network.patchRoom(this.netToken, { guestInput: controls[1] || { left: false, right: false, jump: false } });
           }
         }
         this.players.forEach((p, i) => p.update(dt, controls[i] || {}, this.level, this));

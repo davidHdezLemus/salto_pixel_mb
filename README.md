@@ -17,8 +17,6 @@ Juego de plataformas 2D estilo retro hecho con HTML, CSS y JavaScript puro sobre
 
 Abre `index.html` en un navegador moderno.
 
-Tambien existe `super_mario_bros.html`, que carga los mismos scripts y assets.
-
 ## Controles
 
 Jugador 1:
@@ -43,17 +41,16 @@ Globales:
 
 - `index.html`: entrada principal.
 - `styles.css`: estilos de HUD, menu, canvas y controles tactiles.
-- `game.js`: motor del juego, fisica, render, input, enemigos, cooperativo y red simulada.
+- `game.js`: motor del juego, fisica, render, input, enemigos y cooperativo.
 - `assets/used/`: assets usados por el juego.
 - `levels/tools.js`: helpers para construir y registrar fases.
 - `levels/level-01.js` a `levels/level-07.js`: fases individuales.
-- `0. Prompt crear Super Mario Bross.txt`: prompt maestro actualizado.
 
 ## Anadir Fases
 
 1. Crea un nuevo archivo en `levels/`, por ejemplo `level-08.js`.
 2. Usa `window.MarioLevelTools.register(() => nivel)` para registrar la fase.
-3. Incluye el nuevo script en `index.html` y `super_mario_bros.html` antes de `game.js`.
+3. Incluye el nuevo script en `index.html` antes de `game.js`.
 
 Los tipos de tile actuales son:
 
@@ -71,4 +68,4 @@ Los tipos de tile actuales son:
 
 ## Estado
 
-Primera version jugable lista para subir a GitHub.
+Primera version jugable.

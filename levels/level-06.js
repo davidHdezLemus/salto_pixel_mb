@@ -19,7 +19,9 @@
     ];
     const helperBlocks = [
       [9, 38, 2], [20, 35, 2], [18, 29, 2], [8, 23, 2],
-      [22, 17, 2], [15, 11, 2], [19, 5, 2]
+      [22, 17, 2], [15, 11, 2], [19, 5, 2],
+      // Puentes para saltos imposibles entre plataformas alejadas
+      [18, 20, 3], [11, 13, 3], [14, 7, 4]
     ];
     platforms.forEach(([x, y, len]) => {
       for (let i = 0; i < len; i++) rows[y][x + i] = 8;
@@ -27,7 +29,8 @@
     helperBlocks.forEach(([x, y, len]) => {
       for (let i = 0; i < len; i++) rows[y][x + i] = 8;
     });
-    [[15, 35], [25, 32, 7], [19, 29, 10], [4, 26], [18, 23, 7], [27, 20], [22, 17, 10], [14, 17, 7], [6, 14], [20, 11, 7], [16, 5, 10]].forEach(([x, y, type = 5]) => rows[y][x] = type);
+    // Enemigos colocados 1 fila sobre su plataforma de aterrizaje
+    [[25, 32, 7], [12, 29, 10], [4, 26], [18, 23, 7], [27, 20], [13, 17, 10], [14, 17, 7], [6, 14], [20, 11, 7], [22, 5, 10]].forEach(([x, y, type = 5]) => rows[y][x] = type);
     [[4, 37], [15, 34], [25, 31], [12, 28], [4, 25], [17, 22], [27, 19], [14, 16], [6, 13], [20, 10], [10, 7], [24, 4]].forEach(([x, y]) => rows[y][x] = 4);
     rows[2][18] = 6;
     rows[1][18] = 6;
