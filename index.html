@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Salto Pixel Cooperativo</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app">
+    <div id="hud">
+      <span id="hudLevel">Nivel 1</span>
+      <span id="hudLives">Vidas 3</span>
+      <span id="hudScore">Puntos 0</span>
+      <span id="hudCoins">Monedas 0</span>
+      <span id="hudSound">Sonido ON</span>
+      <span id="hudMode">Solo</span>
+    </div>
+    <canvas id="gameCanvas" width="960" height="540"></canvas>
+
+    <aside id="menu">
+      <h2 class="screen-title" id="menuTitle">Menú</h2>
+      <div id="menuBody" class="menu-grid"></div>
+    </aside>
+
+    <div id="overlay"></div>
+
+    <div id="touchControls">
+      <div class="touch-group">
+        <button data-touch="left">◀</button>
+        <button data-touch="right">▶</button>
+      </div>
+      <div class="touch-group">
+        <button data-touch="jump">▲</button>
+        <button data-action="pause">Ⅱ</button>
+      </div>
+    </div>
+  </div>
+  <script src="levels/tools.js"></script>
+  <script src="levels/level-01.js"></script>
+  <script src="levels/level-02.js"></script>
+  <script src="levels/level-03.js"></script>
+  <script src="levels/level-04.js"></script>
+  <script src="levels/level-05.js"></script>
+  <script src="levels/level-06.js"></script>
+  <script src="levels/level-07.js"></script>
+  <script src="game.js"></script>
+</body>
+</html>
+
+
