@@ -1317,8 +1317,10 @@
       drawBackground() {
         const p = this.level.palette;
         if (p.bgAsset === "world-one" && worldOneBg.complete && worldOneBg.naturalWidth > 0) {
-          const sx = clamp(this.camera.x, 0, Math.max(0, worldOneBg.naturalWidth - VIEW_W));
-          ctx.drawImage(worldOneBg, sx, 0, VIEW_W, 227, 0, 0, VIEW_W, VIEW_H);
+          const scale = p.bgScale || 2;
+          const sourceW = VIEW_W / scale;
+          const sx = clamp(this.camera.x / scale, 0, Math.max(0, worldOneBg.naturalWidth - sourceW));
+          ctx.drawImage(worldOneBg, sx, 0, sourceW, 224, 0, p.bgOffsetY || 0, VIEW_W, 224 * scale);
           return;
         }
         ctx.fillStyle = p.sky;
