@@ -4,8 +4,19 @@ class NetworkManager {
       constructor() {
         this.peer = null;
         this.conn = null;
-        this.onMessage = null;
+        this._onMessage = null;
+        this.pending = [];
         this.onGuestConnect = null;
+      }
+
+      get onMessage() {
+        return this._onMessage;
+      }
+
+      set onMessage(handler) {
+        this._onMessage = handler;
+        if (!handler) return;
+        while (this.pending.length) handler(this.pending.shift());
       }
 
       _roomCode() {
@@ -33,13 +44,17 @@ class NetworkManager {
       _attach(conn) {
         this.conn = conn;
         conn.on("data", (data) => {
-          if (!this.onMessage) return;
           try {
             const msg = typeof data === "string" ? JSON.parse(data) : data;
-            this.onMessage(msg);
+            if (this._onMessage) this._onMessage(msg);
+            else this.pending.push(msg);
           } catch {}
         });
-        conn.on("close", () => { if (this.onMessage) this.onMessage({ t: "disconnect" }); });
+        conn.on("close", () => {
+          const msg = { t: "disconnect" };
+          if (this._onMessage) this._onMessage(msg);
+          else this.pending.push(msg);
+        });
       }
 
       async openRoom() {
@@ -79,6 +94,7 @@ class NetworkManager {
         if (this.peer) { try { this.peer.destroy(); } catch {} }
         this.peer = null;
         this.conn = null;
+        this.pending = [];
       }
     }
 

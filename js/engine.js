@@ -191,16 +191,16 @@ class Game {
           this.mode = "network";
           this.netGuestConnected = false;
           this.netError = "";
+          this.network.onMessage = (msg) => this.handleNetMessage(msg);
+          this.network.onGuestConnect = () => {
+            this.netGuestConnected = true;
+            this.renderMenu();
+          };
           this.menuView = "hostConnecting";
           this.renderMenu();
           this.network.openRoom()
             .then((code) => {
               this.netToken = code;
-              this.network.onGuestConnect = () => {
-                this.netGuestConnected = true;
-                this.network.onMessage = (msg) => this.handleNetMessage(msg);
-                this.renderMenu();
-              };
               this.menuView = "hostLobby";
               this.renderMenu();
             })
@@ -218,19 +218,22 @@ class Game {
           const token = $("joinToken").value.trim().toUpperCase();
           if (!token) return;
           this.netError = "";
+          this.netToken = token;
+          this.netRole = "guest";
+          this.mode = "network";
           this.menuView = "guestConnecting";
           this.renderMenu();
+          this.network.onMessage = (msg) => this.handleNetMessage(msg);
           this.network.joinRoom(token.toLowerCase())
             .then(() => {
-              this.netToken = token;
-              this.netRole = "guest";
-              this.mode = "network";
-              this.network.onMessage = (msg) => this.handleNetMessage(msg);
               this.menuView = "guestLobby";
               this.renderMenu();
             })
             .catch((err) => {
               this.netError = err.message || "No se pudo conectar. Verifica el código.";
+              this.netRole = null;
+              this.mode = "solo";
+              this.netToken = "";
               this.menuView = "join";
               this.renderMenu();
             });
@@ -265,7 +268,7 @@ class Game {
       handleNetMessage(msg) {
         if (msg.t === "start" && this.netRole === "guest") {
           this.startGuestNetwork();
-        } else if (msg.t === "snapshot" && this.state === "playing" && this.netRole === "guest") {
+        } else if (msg.t === "snapshot" && this.netRole === "guest") {
           this.applyGuestSnapshot(msg.data);
         } else if (msg.t === "input" && this.netRole === "host") {
           this._guestInput = msg.input;
@@ -353,10 +356,13 @@ class Game {
         this.last = now;
         if (this.state === "playing") this.update(dt);
         if (this.state === "courseclear") {
-          this._clearTimer -= dt;
-          const el = document.getElementById("clearCountdown");
-          if (el) el.textContent = Math.max(0, Math.ceil(this._clearTimer));
-          if (this._clearTimer <= 0) this.nextLevel();
+          if (!(this.mode === "network" && this.netRole === "guest")) {
+            this._clearTimer -= dt;
+            const el = document.getElementById("clearCountdown");
+            if (el) el.textContent = Math.max(0, Math.ceil(this._clearTimer));
+            if (this._clearTimer <= 0) this.nextLevel();
+          }
+          if (this.mode === "network" && this.netRole === "host") this.multi.syncNetwork();
         }
         this.draw();
         this.updateHud();
@@ -364,6 +370,10 @@ class Game {
       }
 
       update(dt) {
+        if (this.mode === "network" && this.netRole === "guest") {
+          this.network.send({ t: "input", input: this.input.playerControls(1) });
+          return;
+        }
         this.levelTime += dt;
         const controls = this.players.map((p) => {
           return this.input.playerControls(p.id);
@@ -371,10 +381,6 @@ class Game {
         if (this.mode === "network") {
           if (this.netRole === "host") {
             controls[1] = this._guestInput || { left: false, right: false, jump: false };
-          }
-          if (this.netRole === "guest") {
-            this.network.send({ t: "input", input: controls[1] });
-            controls[0] = { left: false, right: false, jump: false };
           }
         }
         this.players.forEach((p, i) => p.update(dt, controls[i] || {}, this.level, this));
@@ -404,6 +410,7 @@ class Game {
           this.showMessage("GAME OVER", "Todos los jugadores se quedaron sin vidas.");
           this.menuVisible = true;
           this.renderMenu();
+          if (this.mode === "network" && this.netRole === "host") this.multi.syncNetwork();
         }
       }
 
@@ -505,14 +512,26 @@ class Game {
           levelIndex: this.levelIndex,
           state: this.state,
           score: this.totalScore(),
-          players: this.players.map((p) => ({ x: p.x, y: p.y, vx: p.vx, vy: p.vy, lives: p.lives, dead: p.dead, state: p.state, powered: p.powered, coins: p.coins })),
+          levelTime: this.levelTime,
+          clearTimer: this._clearTimer,
+          camera: { x: this.camera.x, y: this.camera.y },
+          rows: this.level.rows.map((row) => row.slice()),
+          players: this.players.map((p) => ({
+            x: p.x, y: p.y, w: p.w, h: p.h, vx: p.vx, vy: p.vy,
+            lives: p.lives, dead: p.dead, state: p.state, powered: p.powered,
+            coins: p.coins, score: p.score, deaths: p.deaths, facing: p.facing,
+            onGround: p.onGround, invuln: p.invuln
+          })),
           enemies: this.level.enemies.map((e) => ({
             x: e.x, y: e.y, vx: e.vx, vy: e.vy,
             dead: e.dead, shell: e.shell, flattened: e.flattened,
             health: e.health, hitAnim: e.hitAnim, hitCooldown: e.hitCooldown
           })),
           coins: this.level.coins.map((c) => c.taken),
-          powerUps: this.level.powerUps.map((p) => p.taken)
+          powerUps: this.level.powerUps.map((p) => p.taken),
+          walkingMushrooms: this.walkingMushrooms.map((m) => ({
+            x: m.x, y: m.y, w: m.w, h: m.h, vx: m.vx, vy: m.vy, active: m.active
+          }))
         };
       }
 
@@ -521,16 +540,17 @@ class Game {
           this.levelIndex = snapshot.levelIndex;
           this.level = new Level(this.levelIndex);
           this.resetPlayers(2);
+          this.walkingMushrooms = [];
         }
+        const prevState = this.state;
+        this.state = snapshot.state || this.state;
+        this.levelTime = snapshot.levelTime || 0;
+        this._clearTimer = snapshot.clearTimer || 0;
+        if (snapshot.camera) Object.assign(this.camera, snapshot.camera);
+        if (snapshot.rows) this.level.rows = snapshot.rows.map((row) => row.slice());
         snapshot.players.forEach((data, i) => {
           if (!this.players[i]) return;
-          if (i === 0) Object.assign(this.players[i], data);
-          else {
-            this.players[i].lives = data.lives;
-            this.players[i].dead = data.dead;
-            this.players[i].powered = data.powered;
-            this.players[i].coins = data.coins || 0;
-          }
+          Object.assign(this.players[i], data);
         });
         snapshot.enemies.forEach((data, i) => {
           if (!this.level.enemies[i]) return;
@@ -542,6 +562,43 @@ class Game {
         });
         snapshot.coins.forEach((taken, i) => { if (this.level.coins[i]) this.level.coins[i].taken = taken; });
         if (snapshot.powerUps) snapshot.powerUps.forEach((taken, i) => { if (this.level.powerUps[i]) this.level.powerUps[i].taken = taken; });
+        if (snapshot.walkingMushrooms) {
+          this.walkingMushrooms = snapshot.walkingMushrooms.map((data) => {
+            const m = new WalkingMushroom(data.x - 4, data.y + TILE, data.vx < 0 ? -1 : 1);
+            Object.assign(m, data);
+            return m;
+          });
+        }
+        if (this.state === "courseclear") this.renderCourseClearOverlay();
+        else if (prevState === "courseclear") $("overlay").innerHTML = "";
+        if (this.state === "victory") {
+          this.sound.stopMusic();
+          this.showMessage("VICTORIA", `Has completado los ${LEVELS.length} niveles.`);
+          this.menuVisible = true;
+          this.renderMenu();
+        } else if (this.state === "gameover") {
+          this.sound.stopMusic();
+          this.showMessage("GAME OVER", "Todos los jugadores se quedaron sin vidas.");
+          this.menuVisible = true;
+          this.renderMenu();
+        }
+      }
+
+      renderCourseClearOverlay() {
+        const mins = String(Math.floor(this.levelTime / 60)).padStart(2, "0");
+        const secs = String(Math.floor(this.levelTime % 60)).padStart(2, "0");
+        const rows = this.players.map((p) =>
+          `<tr><td>J${p.id}</td><td>${p.lives}</td><td>${p.deaths || 0}</td><td>${p.coins || 0}</td></tr>`
+        ).join("");
+        $("overlay").innerHTML = `<div>
+          <h1>¡Nivel ${this.levelIndex + 1} completado!</h1>
+          <p>Tiempo: ${mins}:${secs}</p>
+          <table style="margin:8px auto;border-collapse:collapse">
+            <tr><th style="padding:4px 12px"></th><th style="padding:4px 12px">Vidas</th><th style="padding:4px 12px">Muertes</th><th style="padding:4px 12px">Monedas</th></tr>
+            ${rows}
+          </table>
+          <p style="opacity:0.6;font-size:0.85em;margin-top:10px">Siguiente nivel en <span id="clearCountdown">${Math.max(0, Math.ceil(this._clearTimer))}</span>s…</p>
+        </div>`;
       }
 
       updateHud() {
