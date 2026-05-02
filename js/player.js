@@ -25,6 +25,7 @@ class Player {
         this.useCharacterSprite = true;
         this.powered = false;
         this.deaths = 0;
+        this.teleportCooldown = 0;
       }
 
       get rect() {
@@ -68,6 +69,7 @@ class Player {
       update(dt, controls, level, game) {
         if (this.dead) return;
         this.invuln = Math.max(0, this.invuln - dt);
+        this.teleportCooldown = Math.max(0, (this.teleportCooldown || 0) - dt);
         if (controls.left) this.vx -= ACCEL * dt;
         if (controls.right) this.vx += ACCEL * dt;
         if (controls.left) this.facing = -1;
@@ -135,13 +137,17 @@ class Player {
             if (level.isQuestion(tx, ty)) {
               level.setTile(tx, ty, 12);
               game.spawnMushroom(tile.x, tile.y, this.facing || 1);
+              game.bumpEnemiesAboveBlock(tx, ty, this);
               game.sound.play("powerup");
               this.y = tile.y + tile.h;
-            } else if (this.powered && level.isBreakable(tx, ty)) {
-              level.setTile(tx, ty, 0);
+            } else if (level.isBreakable(tx, ty)) {
+              if (this.powered) {
+                level.setTile(tx, ty, 0);
+              }
+              game.bumpEnemiesAboveBlock(tx, ty, this);
               game.sound.play("stomp");
               this.vy = Math.max(this.vy, -90);
-              continue;
+              if (this.powered) continue;
             }
             this.y = tile.y + tile.h;
           }
@@ -164,12 +170,16 @@ class Player {
             if (level.isQuestion(tx, ty)) {
               level.setTile(tx, ty, 12);
               game.spawnMushroom(tx * TILE, ty * TILE, this.facing || 1);
+              game.bumpEnemiesAboveBlock(tx, ty, this);
               game.sound.play("powerup");
               this.vy = Math.max(this.vy, -90);
               return true;
             }
-            if (this.powered && level.isBreakable(tx, ty)) {
-              level.setTile(tx, ty, 0);
+            if (level.isBreakable(tx, ty)) {
+              if (this.powered) {
+                level.setTile(tx, ty, 0);
+              }
+              game.bumpEnemiesAboveBlock(tx, ty, this);
               game.sound.play("stomp");
               this.vy = Math.max(this.vy, -90);
               return true;
@@ -187,18 +197,6 @@ class Player {
           this.drawCharacterSprite(ctx, x, y);
           return;
         }
-        if (this.dead) return;
-        ctx.fillStyle = this.colors.body;
-        ctx.fillRect(x + 4, y + 10, 16, 18);
-        ctx.fillStyle = this.colors.cap;
-        ctx.fillRect(x + 2, y + 4, 20, 8);
-        ctx.fillStyle = "#ffd5a3";
-        ctx.fillRect(x + 6, y + 10, 13, 8);
-        ctx.fillStyle = "#1b1b24";
-        ctx.fillRect(x + 15, y + 12, 3, 3);
-        ctx.fillStyle = this.colors.legs;
-        ctx.fillRect(x + 4, y + 26, 7, 4);
-        ctx.fillRect(x + 14, y + 26, 7, 4);
       }
 
       drawCharacterSprite(ctx, x, y) {

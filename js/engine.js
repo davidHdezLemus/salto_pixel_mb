@@ -24,6 +24,8 @@ class Game {
         this.levelTime = 0;
         this._clearTimer = 0;
         this.walkingMushrooms = [];
+        this.loadingAssets = { done: 0, total: 0, errors: [] };
+        this._loadToken = null;
         this.resetPlayers(1);
         this.bindMenu();
         this.renderMenu();
@@ -51,9 +53,58 @@ class Game {
         }
       }
 
+      beginLevelLoading(nextState = "playing", afterLoad = null) {
+        const token = Symbol("level-load");
+        this._loadToken = token;
+        this.sound.stopSfx();
+        const imageAssets = levelImages(this.level).map((image) => ({
+          kind: "sprites",
+          src: image?.currentSrc || image?.src || "",
+          wait: () => waitForImage(image)
+        }));
+        const soundAssets = this.sound.preloadAssets();
+        const assets = [...imageAssets, ...soundAssets];
+        this.loadingAssets = {
+          done: 0,
+          total: assets.length,
+          spritesDone: 0,
+          spritesTotal: imageAssets.length,
+          soundsDone: 0,
+          soundsTotal: soundAssets.length,
+          current: "",
+          errors: []
+        };
+        this.state = "loading";
+        $("overlay").innerHTML = "";
+        if (!assets.length) {
+          this.finishLevelLoading(token, nextState, afterLoad);
+          return;
+        }
+        Promise.all(assets.map((asset) => asset.wait().then((result) => {
+          if (this._loadToken !== token) return result;
+          const kind = asset.kind === "sounds" ? "sounds" : "sprites";
+          this.loadingAssets.done += 1;
+          this.loadingAssets.current = result.src || asset.src || "";
+          if (kind === "sounds") this.loadingAssets.soundsDone += 1;
+          else this.loadingAssets.spritesDone += 1;
+          if (!result.ok) this.loadingAssets.errors.push(result.src);
+          return result;
+        }))).then(() => this.finishLevelLoading(token, nextState, afterLoad));
+      }
+
+      finishLevelLoading(token, nextState, afterLoad) {
+        if (this._loadToken !== token) return;
+        this._loadToken = null;
+        if (this.loadingAssets.errors.length) {
+          console.warn("No se pudieron cargar algunos recursos del nivel:", this.loadingAssets.errors);
+        }
+        this.state = nextState;
+        this.showMessage("", "");
+        if (afterLoad) afterLoad();
+      }
+
       start(mode = "solo") {
         this.mode = mode;
-        this.state = "playing";
         this.levelIndex = 0;
         this.level = new Level(0);
         this.camera.x = 0;
@@ -61,10 +112,9 @@ class Game {
         this.resetPlayers(mode === "solo" ? 1 : 2);
         this.levelTime = 0;
         this.walkingMushrooms = [];
-        this.showMessage("", "");
         this.menuVisible = false;
         this.renderMenu();
-        this.sound.startMusic();
+        this.beginLevelLoading("playing", () => this.sound.startMusic());
       }
 
       nextLevel() {
@@ -98,7 +148,7 @@ class Game {
           p.h = p.powered ? TILE * 2 : TILE;
           p.deaths = deaths[i] || 0;
         });
-        this.sound.startMusic();
+        this.beginLevelLoading("playing", () => this.sound.startMusic());
       }
 
       courseClear() {
@@ -253,16 +303,14 @@ class Game {
       }
 
       startGuestNetwork() {
-        this.state = "playing";
         this.levelIndex = 0;
         this.level = new Level(0);
         this.camera.x = 0;
         this.camera.y = 0;
         this.resetPlayers(2);
-        this.showMessage("", "");
         this.menuVisible = false;
         this.renderMenu();
-        this.sound.startMusic();
+        this.beginLevelLoading("playing", () => this.sound.startMusic());
       }
 
       handleNetMessage(msg) {
@@ -384,7 +432,9 @@ class Game {
           }
         }
         this.players.forEach((p, i) => p.update(dt, controls[i] || {}, this.level, this));
+        this.handleTeleports();
         this.level.enemies.forEach((e) => e.update(dt, this.level));
+        this.handleEnemyBodyCollisions();
         this.handleCoins();
         this.handlePowerUps();
         this.handleShellHits();
@@ -440,10 +490,184 @@ class Game {
         }
       }
 
+      handleTeleports() {
+        if (!this.level.teleports?.length) return;
+        for (const player of this.players) {
+          if (player.dead || player.teleportCooldown > 0) continue;
+          const touchRect = {
+            x: player.x - 4,
+            y: player.y - 4,
+            w: player.w + 8,
+            h: player.h + 8
+          };
+          for (const teleport of this.level.teleports) {
+            if (!rectsOverlap(touchRect, teleport)) continue;
+            player.x = clamp(teleport.toX, 0, this.level.pixelWidth - player.w);
+            player.y = clamp(teleport.toY, 0, this.level.pixelHeight - player.h);
+            player.vx = 0;
+            player.vy = 0;
+            player.teleportCooldown = .55;
+            player.invuln = Math.max(player.invuln || 0, .35);
+            if (teleport.sound !== "none") this.sound.play(teleport.sound || "pipe");
+            break;
+          }
+        }
+      }
+
       rewardEnemyDefeat(player, enemy) {
         if (!player) return;
         player.coins += 1;
-        player.score += enemy.kind === "hopper" || enemy.kind === "koopa" ? 180 : 120;
+        player.score += enemy.kind === "Chargin_Chuck" || enemy.kind === "koopa" ? 180 : 120;
+      }
+
+      customAssetById(id) {
+        return this.level.customAssetFor(Number(id));
+      }
+
+      customShellAsset(enemy) {
+        return this.customAssetById(enemy.customAsset?.mob?.defeatedAsset);
+      }
+
+      customMovingShellAsset(enemy) {
+        return this.customAssetById(enemy.customAsset?.mob?.movingAsset);
+      }
+
+      isShellEnemy(enemy) {
+        return (enemy.kind === "koopa" || enemy.kind === "custom") && enemy.shell;
+      }
+
+      isMovingShell(enemy) {
+        return this.isShellEnemy(enemy) && this.shellCanHurtPlayer(enemy);
+      }
+
+      shellContactIsSafe(enemy) {
+        return this.isShellEnemy(enemy) && enemy.shellSafeTimer > 0;
+      }
+
+      shellUsesRestingSprite(enemy) {
+        if (!this.isShellEnemy(enemy)) return false;
+        if (enemy.kind !== "custom") return Math.abs(enemy.vx) < 90;
+        const restingAssetId = Number(enemy.shellRestingAssetId || enemy.customAsset?.mob?.defeatedAsset || 0);
+        if (!restingAssetId) return Math.abs(enemy.vx) < 90;
+        return Number(enemy.customAsset?.id) === restingAssetId;
+      }
+
+      shellCanHurtPlayer(enemy) {
+        if (!this.isShellEnemy(enemy) || this.shellContactIsSafe(enemy)) return false;
+        if (this.shellUsesRestingSprite(enemy)) return false;
+        const movingAssetId = Number(enemy.shellMovingAssetId || enemy.customAsset?.mob?.movingAsset || 0);
+        if (enemy.kind === "custom" && movingAssetId) {
+          return Number(enemy.customAsset?.id) === movingAssetId && Math.abs(enemy.vx) >= 90;
+        }
+        return Math.abs(enemy.vx) >= 90;
+      }
+
+      kickRestingShell(enemy, player) {
+        player.invuln = Math.max(player.invuln || 0, 1);
+        const playerCenter = player.x + player.w / 2;
+        const shellCenter = enemy.x + enemy.w / 2;
+        const direction = playerCenter <= shellCenter ? 1 : -1;
+        if (enemy.kind === "custom") enemy.kickShell(direction, player, this.customMovingShellAsset(enemy));
+        else enemy.kickShell(direction, player);
+        this.sound.play("stomp");
+      }
+
+      destroyShell(enemy, player = null) {
+        if (!this.isShellEnemy(enemy)) return false;
+        enemy.dead = true;
+        enemy.vx = 0;
+        this.rewardEnemyDefeat(player, enemy);
+        return true;
+      }
+
+      stompCustomEnemy(player, enemy) {
+        if (enemy.shell) {
+          return this.destroyShell(enemy, player);
+        }
+        if (!enemy.takeStomp()) return false;
+        const mob = enemy.customAsset?.mob || {};
+        if (mob.defeatAction === "shell") {
+          const shellAsset = this.customShellAsset(enemy);
+          if (shellAsset) {
+            enemy.enterShell(player, shellAsset);
+            return true;
+          }
+        }
+        enemy.flattened = .45;
+        enemy.vx = 0;
+        return true;
+      }
+
+      damageEnemyFromBlock(enemy, player = null) {
+        if (enemy.dead || enemy.flattened > 0 || enemy.hitCooldown > 0) return false;
+        if (enemy.kind === "koopa") {
+          enemy.enterShell(player, null, .55);
+          return true;
+        }
+        if (enemy.kind === "custom") {
+          if (!enemy.takeStomp()) return true;
+          const mob = enemy.customAsset?.mob || {};
+          if (mob.defeatAction === "shell") {
+            const shellAsset = this.customShellAsset(enemy);
+            if (shellAsset) {
+              enemy.enterShell(player, shellAsset, .55);
+              return true;
+            }
+          }
+          enemy.flattened = .35;
+          enemy.vx = 0;
+          return true;
+        }
+        if (enemy.kind === "Chargin_Chuck") {
+          if (!enemy.takeStomp()) return true;
+          enemy.flattened = .35;
+          return true;
+        }
+        enemy.flattened = .35;
+        enemy.vx = 0;
+        return true;
+      }
+
+      bumpEnemiesAboveBlock(tx, ty, player = null) {
+        const block = { x: tx * TILE, y: ty * TILE, w: TILE, h: TILE };
+        let hitAny = false;
+        for (const enemy of this.level.enemies) {
+          if (enemy.dead || enemy.flattened > 0) continue;
+          const overlapsX = enemy.x + enemy.w > block.x + 2 && enemy.x < block.x + block.w - 2;
+          const onTop = enemy.y + enemy.h >= block.y - 8 && enemy.y + enemy.h <= block.y + 10;
+          if (!overlapsX || !onTop) continue;
+          if (this.damageEnemyFromBlock(enemy, player)) {
+            enemy.vy = -260;
+            hitAny = true;
+            if (enemy.dead || enemy.flattened > 0 || enemy.shell) {
+              this.rewardEnemyDefeat(player, enemy);
+            }
+          }
+        }
+        if (hitAny) this.sound.play("stomp");
+      }
+
+      handleEnemyBodyCollisions() {
+        const enemies = this.level.enemies;
+        for (let i = 0; i < enemies.length; i++) {
+          const a = enemies[i];
+          if (a.dead || a.flattened > 0) continue;
+          for (let j = i + 1; j < enemies.length; j++) {
+            const b = enemies[j];
+            if (b.dead || b.flattened > 0) continue;
+            if (!rectsOverlap(a.rect, b.rect)) continue;
+            if (this.isMovingShell(a) || this.isMovingShell(b)) continue;
+            const aCenter = a.x + a.w / 2;
+            const bCenter = b.x + b.w / 2;
+            const aLeft = aCenter <= bCenter;
+            const overlap = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+            const separate = Math.max(1, overlap / 2 + 1);
+            a.x += aLeft ? -separate : separate;
+            b.x += aLeft ? separate : -separate;
+            if (!a.shell) a.vx = (aLeft ? -1 : 1) * Math.max(45, Math.abs(a.vx || 55));
+            if (!b.shell) b.vx = (aLeft ? 1 : -1) * Math.max(45, Math.abs(b.vx || 55));
+          }
+        }
       }
 
       handleEnemyHits() {
@@ -452,11 +676,30 @@ class Game {
           if (enemy.flattened > 0) continue;
           for (const player of this.players) {
             if (player.dead || !rectsOverlap(player.rect, enemy.rect)) continue;
-            const stomp = player.vy > 120 && player.y + player.h - enemy.y < 18;
+            const playerBottom = player.y + player.h;
+            const enemyTop = enemy.y;
+            const overlapFromTop = playerBottom - enemyTop;
+            const stompWindow = this.isShellEnemy(enemy)
+              ? Math.max(18, Math.min(30, enemy.h * .85))
+              : Math.max(18, Math.min(34, enemy.h * .7));
+            const stomp = player.vy > 70 && player.y < enemy.y + enemy.h * .5 && overlapFromTop >= -4 && overlapFromTop <= stompWindow;
             if (stomp) {
-              if (enemy.kind === "koopa") {
+              if (this.isShellEnemy(enemy)) {
+                this.destroyShell(enemy, player);
+                player.vy = -560;
+                player.jumpHeld = true;
+                this.sound.play("stomp");
+                continue;
+              } else if (enemy.kind === "koopa") {
                 enemy.enterShell(player);
-              } else if (enemy.kind === "hopper") {
+              } else if (enemy.kind === "custom") {
+                if (!this.stompCustomEnemy(player, enemy)) {
+                  player.vy = -560;
+                  player.jumpHeld = true;
+                  this.sound.play("stomp");
+                  continue;
+                }
+              } else if (enemy.kind === "Chargin_Chuck") {
                 if (!enemy.takeStomp()) {
                   player.vy = -620;
                   player.jumpHeld = true;
@@ -468,17 +711,25 @@ class Game {
                 enemy.flattened = .45;
                 enemy.vx = 0;
               }
-              player.vy = enemy.kind === "hopper" ? -620 : -560;
+              player.vy = enemy.kind === "Chargin_Chuck" ? -620 : -560;
               player.jumpHeld = true;
               this.rewardEnemyDefeat(player, enemy);
               this.sound.play("stomp");
             } else {
+              if (this.shellContactIsSafe(enemy)) continue;
+              if (enemy.kind === "custom" && enemy.shell) {
+                if (this.shellCanHurtPlayer(enemy)) {
+                  player.hurt(this);
+                } else {
+                  this.kickRestingShell(enemy, player);
+                }
+                continue;
+              }
               if (enemy.kind === "koopa" && enemy.shell) {
-                if (Math.abs(enemy.vx) <= 1) {
-                  const playerCenter = player.x + player.w / 2;
-                  const shellCenter = enemy.x + enemy.w / 2;
-                  enemy.kickShell(playerCenter <= shellCenter ? 1 : -1, player);
-                  this.sound.play("stomp");
+                if (this.shellCanHurtPlayer(enemy)) {
+                  player.hurt(this);
+                } else {
+                  this.kickRestingShell(enemy, player);
                 }
                 continue;
               }
@@ -489,7 +740,7 @@ class Game {
       }
 
       handleShellHits() {
-        const shells = this.level.enemies.filter((e) => !e.dead && e.kind === "koopa" && e.shell && Math.abs(e.vx) > 1);
+        const shells = this.level.enemies.filter((e) => !e.dead && this.shellCanHurtPlayer(e));
         for (const shell of shells) {
           for (const enemy of this.level.enemies) {
             if (enemy === shell || enemy.dead || enemy.flattened > 0) continue;
@@ -520,12 +771,13 @@ class Game {
             x: p.x, y: p.y, w: p.w, h: p.h, vx: p.vx, vy: p.vy,
             lives: p.lives, dead: p.dead, state: p.state, powered: p.powered,
             coins: p.coins, score: p.score, deaths: p.deaths, facing: p.facing,
-            onGround: p.onGround, invuln: p.invuln
+            onGround: p.onGround, invuln: p.invuln, teleportCooldown: p.teleportCooldown
           })),
           enemies: this.level.enemies.map((e) => ({
             x: e.x, y: e.y, vx: e.vx, vy: e.vy,
             dead: e.dead, shell: e.shell, flattened: e.flattened,
-            health: e.health, hitAnim: e.hitAnim, hitCooldown: e.hitCooldown
+            health: e.health, hitAnim: e.hitAnim, hitCooldown: e.hitCooldown, shellSafeTimer: e.shellSafeTimer,
+            shellRestingAssetId: e.shellRestingAssetId, shellMovingAssetId: e.shellMovingAssetId
           })),
           coins: this.level.coins.map((c) => c.taken),
           powerUps: this.level.powerUps.map((p) => p.taken),
@@ -541,9 +793,10 @@ class Game {
           this.level = new Level(this.levelIndex);
           this.resetPlayers(2);
           this.walkingMushrooms = [];
+          this.beginLevelLoading(snapshot.state || "playing");
         }
         const prevState = this.state;
-        this.state = snapshot.state || this.state;
+        if (this.state !== "loading") this.state = snapshot.state || this.state;
         this.levelTime = snapshot.levelTime || 0;
         this._clearTimer = snapshot.clearTimer || 0;
         if (snapshot.camera) Object.assign(this.camera, snapshot.camera);
@@ -612,6 +865,10 @@ class Game {
 
       draw() {
         ctx.clearRect(0, 0, VIEW_W, VIEW_H);
+        if (this.state === "loading") {
+          this.drawLoading();
+          return;
+        }
         this.drawBackground();
         this.drawTiles();
         this.drawGoal();
@@ -620,6 +877,68 @@ class Game {
         this.walkingMushrooms.forEach((m) => m.draw(ctx, this.camera));
         this.level.enemies.forEach((e) => e.draw(ctx, this.camera));
         this.players.forEach((p) => p.draw(ctx, this.camera));
+      }
+
+      drawLoading() {
+        const p = this.level?.palette || { sky: "#6b8cff" };
+        ctx.fillStyle = p.sky || "#6b8cff";
+        ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+        ctx.fillStyle = "rgba(7, 12, 28, 0.9)";
+        ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+        const total = Math.max(1, this.loadingAssets.total || 1);
+        const done = Math.min(total, this.loadingAssets.done || 0);
+        const progress = done / total;
+        const barW = 460;
+        const barH = 22;
+        const x = Math.round((VIEW_W - barW) / 2);
+        const y = Math.round(VIEW_H / 2 + 24);
+        const pulse = .55 + Math.sin(performance.now() / 180) * .18;
+        ctx.fillStyle = "#f7f1d4";
+        ctx.font = "bold 30px monospace";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("CARGANDO NIVEL", VIEW_W / 2, VIEW_H / 2 - 36);
+        ctx.fillStyle = "#dfe7ff";
+        ctx.font = "14px monospace";
+        ctx.fillText("sprites + sonidos", VIEW_W / 2, VIEW_H / 2 - 8);
+
+        ctx.save();
+        ctx.shadowColor = `rgba(247, 197, 72, ${pulse})`;
+        ctx.shadowBlur = 18;
+        ctx.fillStyle = "#10182d";
+        ctx.fillRect(x - 4, y - 4, barW + 8, barH + 8);
+        ctx.restore();
+        ctx.fillStyle = "#25314d";
+        ctx.fillRect(x, y, barW, barH);
+        const fillW = Math.round(barW * progress);
+        const gradient = ctx.createLinearGradient(x, y, x + barW, y);
+        gradient.addColorStop(0, "#40c057");
+        gradient.addColorStop(.55, "#f7c548");
+        gradient.addColorStop(1, "#ff8c42");
+        ctx.fillStyle = gradient;
+        ctx.fillRect(x, y, fillW, barH);
+        ctx.fillStyle = "rgba(255, 255, 255, 0.22)";
+        ctx.fillRect(x, y + 2, fillW, 5);
+        ctx.strokeStyle = "#f7f1d4";
+        ctx.strokeRect(x + .5, y + .5, barW - 1, barH - 1);
+        for (let i = 1; i < 10; i++) {
+          const px = x + Math.round((barW / 10) * i);
+          ctx.strokeStyle = "rgba(255,255,255,0.12)";
+          ctx.beginPath();
+          ctx.moveTo(px, y);
+          ctx.lineTo(px, y + barH);
+          ctx.stroke();
+        }
+        const spritesDone = this.loadingAssets.spritesDone || 0;
+        const spritesTotal = this.loadingAssets.spritesTotal || 0;
+        const soundsDone = this.loadingAssets.soundsDone || 0;
+        const soundsTotal = this.loadingAssets.soundsTotal || 0;
+        ctx.font = "14px monospace";
+        ctx.fillStyle = "#dfe7ff";
+        ctx.fillText(`${done}/${total} recursos`, VIEW_W / 2, y + 42);
+        ctx.fillText(`sprites ${spritesDone}/${spritesTotal}   sonidos ${soundsDone}/${soundsTotal}`, VIEW_W / 2, y + 62);
+        ctx.textAlign = "start";
+        ctx.textBaseline = "alphabetic";
       }
 
       drawBackground() {
@@ -633,30 +952,14 @@ class Game {
         }
         ctx.fillStyle = p.sky;
         ctx.fillRect(0, 0, VIEW_W, VIEW_H);
-        ctx.fillStyle = "#ffffffaa";
-        const cloudCount = p.vertical ? 14 : 7;
-        for (let i = 0; i < cloudCount; i++) {
-          const x = (i * 210 - this.camera.x * .25) % (VIEW_W + 180) - 80;
-          const y = p.vertical ? ((i * 160 - this.camera.y * .35) % (VIEW_H + 220) - 80) : 50 + (i % 3) * 34;
-          ctx.fillRect(x, y, 70, 18);
-          ctx.fillRect(x + 18, y - 12, 34, 12);
-        }
-        ctx.fillStyle = p.back;
-        for (let i = 0; i < 8; i++) {
-          const x = (i * 180 - this.camera.x * .12) % (VIEW_W + 220) - 120;
-          ctx.beginPath();
-          ctx.moveTo(x, 390);
-          ctx.lineTo(x + 90, 240);
-          ctx.lineTo(x + 180, 390);
-          ctx.fill();
-        }
-        ctx.fillStyle = p.hills;
-        ctx.fillRect(0, p.vertical ? 430 : 390, VIEW_W, 170);
-        if (tileSheet.complete && tileSheet.naturalWidth > 0 && !p.vertical) {
-          for (let i = 0; i < 8; i++) {
-            const x = (i * 260 - this.camera.x * .18) % (VIEW_W + 240) - 120;
-            ctx.drawImage(tileSheet, 64, 80, 48, 40, x, 272, 144, 120);
-          }
+        for (const zone of this.level.backgroundZones || []) {
+          const x = zone.x * TILE - this.camera.x;
+          const y = zone.y * TILE - this.camera.y;
+          const w = zone.w * TILE;
+          const h = zone.h * TILE;
+          if (x + w < 0 || y + h < 0 || x > VIEW_W || y > VIEW_H) continue;
+          ctx.fillStyle = zone.color || p.sky;
+          ctx.fillRect(x, y, w, h);
         }
       }
 
@@ -668,38 +971,61 @@ class Game {
         for (let y = startY; y <= endY; y++) {
           for (let x = startX; x <= endX; x++) {
             const type = this.level.tileAt(x, y);
-            if (![1, 2, 3, 8, 11, 12].includes(type)) continue;
-            if (this.level.palette.bgAsset === "world-one" && type === 1) continue;
+            const customAsset = this.level.customAssetFor(type);
+            if (![1, 2, 3, 8, 11, 12, 14, 15, 16, 17, 18, 19, 20].includes(type) && !customAsset) continue;
             const sx = x * TILE - this.camera.x;
             const sy = y * TILE - this.camera.y;
+            const rotation = this.level.tileRotationAt(x, y);
+            if (customAsset) {
+              this.drawCustomAsset(customAsset, sx, sy, rotation);
+              continue;
+            }
+            if (type === 19 && castleSheet.complete && castleSheet.naturalWidth > 0) {
+              this.drawRotated(rotation, sx, sy, TILE * 5, TILE * 5, () => {
+                ctx.drawImage(castleSheet, sx, sy, TILE * 5, TILE * 5);
+              });
+              continue;
+            }
+            if ([14, 15, 16, 17, 18, 20].includes(type) && tileSheet.complete && tileSheet.naturalWidth > 0) {
+              if (type === 14 && flagPoleSheet.complete && flagPoleSheet.naturalWidth > 0) {
+                this.drawRotated(rotation, sx, sy, TILE, TILE, () => {
+                  ctx.drawImage(flagPoleSheet, 7, 16, 2, 16, sx + TILE - 4, sy, 4, TILE);
+                });
+                continue;
+              }
+              const decorMap = {
+                15: { sx: 96, sy: 0, sw: 32, sh: 32, dw: TILE * 2, dh: TILE * 2 },
+                16: { sx: 89, sy: 32, sw: 30, sh: 22, dx: 0, dy: 9, dw: TILE * 2, dh: 46 },
+                17: { sx: 48, sy: 77, sw: 80, sh: 35, dw: TILE * 5, dh: TILE * 2 },
+                18: { sx: 8, sy: 96, sw: 32, sh: 16, dw: TILE * 2, dh: TILE },
+                20: { sx: 96, sy: 16, sw: 32, sh: 16, dw: TILE * 2, dh: TILE }
+              };
+              const d = decorMap[type];
+              if (d) {
+                this.drawRotated(rotation, sx, sy, d.dw, d.dh, () => {
+                  ctx.drawImage(tileSheet, d.sx, d.sy, d.sw, d.sh, sx + (d.dx || 0), sy + (d.dy || 0), d.dw, d.dh);
+                });
+              }
+              continue;
+            }
             if (type === 8) {
-              ctx.fillStyle = "#eefaff";
-              ctx.fillRect(sx, sy + 8, TILE, 16);
-              ctx.fillStyle = "#c6ecff";
-              ctx.fillRect(sx + 3, sy + 4, TILE - 6, 8);
-              ctx.strokeStyle = "#8bcff2";
-              ctx.strokeRect(sx + .5, sy + 8.5, TILE - 1, 15);
+              this.drawRotated(rotation, sx, sy, TILE, TILE, () => {
+                ctx.fillStyle = "#eefaff";
+                ctx.fillRect(sx, sy + 8, TILE, 16);
+                ctx.fillStyle = "#c6ecff";
+                ctx.fillRect(sx + 3, sy + 4, TILE - 6, 8);
+                ctx.strokeStyle = "#8bcff2";
+                ctx.strokeRect(sx + .5, sy + 8.5, TILE - 1, 15);
+              });
               continue;
             }
             if (type === 11 || type === 12) {
-              if (qBlockSheet.complete && qBlockSheet.naturalWidth > 0) {
-                const qFrame = type === 12 ? 4 : Math.floor(performance.now() / 160) % 4;
-                ctx.drawImage(qBlockSheet, qFrame * 16, 0, 16, 16, sx, sy, TILE, TILE);
-              } else {
-                ctx.fillStyle = type === 12 ? "#888" : "#f7c548";
-                ctx.fillRect(sx, sy, TILE, TILE);
-                ctx.strokeStyle = "#5f321f";
-                ctx.lineWidth = 2;
-                ctx.strokeRect(sx + 1, sy + 1, TILE - 2, TILE - 2);
-                if (type === 11) {
-                  ctx.fillStyle = "#fff";
-                  ctx.font = `bold ${TILE * 0.6}px sans-serif`;
-                  ctx.textAlign = "center";
-                  ctx.textBaseline = "middle";
-                  ctx.fillText("?", sx + TILE / 2, sy + TILE / 2);
-                  ctx.textBaseline = "alphabetic";
+              this.drawRotated(rotation, sx, sy, TILE, TILE, () => {
+                if (qBlockSheet.complete && qBlockSheet.naturalWidth > 0) {
+                  const qFrame = type === 12 ? 4 : Math.floor(performance.now() / 160) % 4;
+                  ctx.drawImage(qBlockSheet, qFrame * 16, 0, 16, 16, sx, sy, TILE, TILE);
                 }
-              }
+              });
               continue;
             }
             if (tileSheet.complete && tileSheet.naturalWidth > 0) {
@@ -709,16 +1035,46 @@ class Game {
                 3: [48, 0]
               };
               const [srcX, srcY] = tileMap[type] || tileMap[1];
-              ctx.drawImage(tileSheet, srcX, srcY, 16, 16, sx, sy, TILE, TILE);
+              this.drawRotated(rotation, sx, sy, TILE, TILE, () => {
+                ctx.drawImage(tileSheet, srcX, srcY, 16, 16, sx, sy, TILE, TILE);
+              });
               continue;
             }
-            ctx.fillStyle = "#b06f3c";
-            ctx.fillRect(sx, sy, TILE, TILE);
-            ctx.fillStyle = "#e0a15f";
-            ctx.fillRect(sx, sy, TILE, 7);
-            ctx.strokeStyle = "#5f321f";
-            ctx.strokeRect(sx + .5, sy + .5, TILE - 1, TILE - 1);
           }
+        }
+      }
+
+      drawRotated(rotation, x, y, w, h, draw) {
+        if (!rotation) {
+          draw();
+          return;
+        }
+        if (rotation === 180) {
+          draw();
+          return;
+        }
+        ctx.save();
+        ctx.translate(x + w / 2, y + h / 2);
+        ctx.rotate(rotation * Math.PI / 180);
+        ctx.translate(-(x + w / 2), -(y + h / 2));
+        draw();
+        ctx.restore();
+      }
+
+      drawCustomAsset(asset, x, y, rotation = 0) {
+        const image = customAssetImage(asset);
+        const [tilesW = 1, tilesH = 1] = asset.tiles || [1, 1];
+        const drawW = TILE * tilesW;
+        const drawH = TILE * tilesH;
+        if (image && image.complete && image.naturalWidth > 0) {
+          const animation = asset.animation || {};
+          const frames = animation.enabled ? Math.max(1, Number(animation.frames) || 1) : 1;
+          const frameW = Math.max(1, Math.floor(image.naturalWidth / frames));
+          const frame = frames > 1 ? Math.floor(performance.now() / 160) % frames : 0;
+          this.drawRotated(rotation, x, y, drawW, drawH, () => {
+            ctx.drawImage(image, frame * frameW, 0, frameW, image.naturalHeight, x, y, drawW, drawH);
+          });
+          return;
         }
       }
 
@@ -726,6 +1082,23 @@ class Game {
         const g = this.level.goal;
         const x = g.x - this.camera.x;
         const y = g.y - this.camera.y;
+        if (this.level.customPole && flagSheet.complete && flagSheet.naturalWidth > 0) {
+          const poleX = (g.poleX ?? (g.x + TILE / 2)) - this.camera.x;
+          ctx.save();
+          ctx.beginPath();
+          ctx.moveTo(poleX, y + 6);
+          ctx.lineTo(poleX + 52, y + 18);
+          ctx.lineTo(poleX, y + 36);
+          ctx.closePath();
+          ctx.fillStyle = "#f7fff2";
+          ctx.fill();
+          ctx.strokeStyle = "#32b54a";
+          ctx.lineWidth = 2;
+          ctx.stroke();
+          ctx.drawImage(flagSheet, poleX + 18, y + 12, 16, 16);
+          ctx.restore();
+          return;
+        }
         if (flagPoleSheet.complete && flagPoleSheet.naturalWidth > 0 && flagSheet.complete && flagSheet.naturalWidth > 0) {
           const poleH = 160;
           const poleW = 16;
@@ -750,18 +1123,6 @@ class Game {
           ctx.restore();
           return;
         }
-        if (this.level.palette.vertical) {
-          ctx.fillStyle = "#ffffff";
-          ctx.fillRect(x - 44, y + 36, 116, 22);
-          ctx.fillRect(x - 20, y + 18, 66, 24);
-          ctx.fillRect(x + 18, y + 8, 48, 18);
-        }
-        ctx.fillStyle = "#f7f1d4";
-        ctx.fillRect(x + 4, y - 28, 6, 92);
-        ctx.fillStyle = "#ef5a4f";
-        ctx.fillRect(x + 10, y - 26, 34, 22);
-        ctx.fillStyle = "#f7c548";
-        ctx.fillRect(x + 16, y - 20, 12, 10);
       }
 
       drawCoins() {
@@ -774,10 +1135,6 @@ class Game {
             ctx.drawImage(itemSheet, frame * ITEM_FRAME, 16, ITEM_FRAME, ITEM_FRAME, x, y, 18, 18);
             continue;
           }
-          ctx.fillStyle = "#f7c548";
-          ctx.fillRect(x + 4, y, 8, 16);
-          ctx.fillStyle = "#fff2a0";
-          ctx.fillRect(x + 6, y + 2, 3, 10);
         }
       }
 
@@ -788,11 +1145,6 @@ class Game {
           const y = powerUp.y - this.camera.y;
           if (itemSheet.complete && itemSheet.naturalWidth > 0) {
             ctx.drawImage(itemSheet, 0, 0, ITEM_FRAME, ITEM_FRAME, x, y, 24, 24);
-          } else {
-            ctx.fillStyle = "#d82d2d";
-            ctx.fillRect(x + 2, y + 2, 20, 10);
-            ctx.fillStyle = "#f7f1d4";
-            ctx.fillRect(x + 5, y + 12, 14, 10);
           }
         }
       }

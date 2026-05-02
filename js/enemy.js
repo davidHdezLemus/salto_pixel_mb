@@ -1,13 +1,14 @@
 "use strict";
 
 class Enemy {
-      constructor(x, y, kind = "crawler") {
+      constructor(x, y, kind = "crawler", customAsset = null) {
         this.x = x;
         this.y = y;
         this.kind = kind;
-        this.w = kind === "hopper" ? 30 : kind === "koopa" ? 24 : 26;
-        this.h = kind === "hopper" ? 32 : kind === "koopa" ? 30 : 24;
-        this.vx = kind === "hopper" ? 88 : kind === "koopa" ? 48 : 55;
+        this.customAsset = customAsset;
+        this.w = kind === "custom" ? TILE * (customAsset?.tiles?.[0] || 1) : kind === "Chargin_Chuck" ? 30 : kind === "koopa" ? 24 : 26;
+        this.h = kind === "custom" ? TILE * (customAsset?.tiles?.[1] || 1) : kind === "Chargin_Chuck" ? 32 : kind === "koopa" ? 30 : 24;
+        this.vx = kind === "custom" ? 55 : kind === "Chargin_Chuck" ? 88 : kind === "koopa" ? 48 : 55;
         this.vy = 0;
         this.dead = false;
         this.onGround = false;
@@ -15,7 +16,10 @@ class Enemy {
         this.flattened = 0;
         this.shell = false;
         this.shellOwner = null;
-        this.health = kind === "hopper" ? 2 : 1;
+        this.shellSafeTimer = 0;
+        this.shellRestingAssetId = 0;
+        this.shellMovingAssetId = 0;
+        this.health = kind === "custom" ? Math.max(1, Number(customAsset?.mob?.hits) || 1) : kind === "Chargin_Chuck" ? 2 : 1;
         this.hitAnim = 0;
         this.hitCooldown = 0;
       }
@@ -33,8 +37,9 @@ class Enemy {
         }
         if (this.hitAnim > 0) this.hitAnim -= dt;
         if (this.hitCooldown > 0) this.hitCooldown -= dt;
+        if (this.shellSafeTimer > 0) this.shellSafeTimer -= dt;
         this.jumpClock -= dt;
-        if (this.kind === "hopper" && this.onGround && this.jumpClock <= 0) {
+        if (this.kind === "Chargin_Chuck" && this.onGround && this.jumpClock <= 0) {
           this.vy = -520;
           this.jumpClock = 1.05 + Math.random() * .55;
         }
@@ -70,27 +75,58 @@ class Enemy {
         }
       }
 
-      enterShell(owner = null) {
+      enterShell(owner = null, shellAsset = null, safeTime = 0) {
         if (this.shell) {
-          this.dead = true;
+          this.vx = 0;
+          this.shellSafeTimer = Math.max(this.shellSafeTimer, safeTime);
+          if (this.kind === "custom" && shellAsset) {
+            this.customAsset = shellAsset;
+            this.shellRestingAssetId = Number(shellAsset.id || 0);
+          }
           return;
         }
         this.shell = true;
         this.shellOwner = owner;
+        this.shellSafeTimer = Math.max(0, safeTime);
         this.vx = 0;
-        this.y += this.h - 16;
-        this.w = 24;
-        this.h = 16;
+        if (this.kind === "custom" && shellAsset) {
+          this.customAsset = shellAsset;
+          this.shellRestingAssetId = Number(shellAsset.id || 0);
+          const oldH = this.h;
+          this.w = TILE * (shellAsset?.tiles?.[0] || 1);
+          this.h = TILE * (shellAsset?.tiles?.[1] || 1);
+          this.y += oldH - this.h;
+        } else {
+          this.y += this.h - 16;
+          this.w = 24;
+          this.h = 16;
+        }
       }
 
-      kickShell(direction, owner = null) {
+      kickShell(direction, owner = null, movingAsset = null) {
         if (!this.shell || this.dead) return;
         if (owner) this.shellOwner = owner;
+        this.shellSafeTimer = 0;
+        if (this.kind === "custom" && movingAsset) {
+          this.customAsset = movingAsset;
+          this.shellMovingAssetId = Number(movingAsset.id || 0);
+          const oldH = this.h;
+          this.w = TILE * (movingAsset?.tiles?.[0] || 1);
+          this.h = TILE * (movingAsset?.tiles?.[1] || 1);
+          this.y += oldH - this.h;
+        }
         this.vx = 360 * (direction || 1);
       }
 
       takeStomp() {
-        if (this.kind !== "hopper") return true;
+        if (this.kind === "custom") {
+          if (this.hitCooldown > 0) return false;
+          this.health -= 1;
+          this.hitAnim = .25;
+          this.hitCooldown = .25;
+          return this.health <= 0;
+        }
+        if (this.kind !== "Chargin_Chuck") return true;
         if (this.hitCooldown > 0) return false;
         this.health -= 1;
         this.hitAnim = .55;
@@ -127,6 +163,17 @@ class Enemy {
         if (this.dead) return;
         const x = Math.round(this.x - camera.x);
         const y = Math.round(this.y - camera.y);
+        if (this.kind === "custom") {
+          const image = customAssetImage(this.customAsset);
+          if (image && image.complete && image.naturalWidth > 0) {
+            const animation = this.customAsset.animation || {};
+            const frames = animation.enabled ? Math.max(1, Number(animation.frames) || 1) : 1;
+            const frameW = Math.max(1, Math.floor(image.naturalWidth / frames));
+            const frame = frames > 1 ? Math.floor(performance.now() / 160) % frames : 0;
+            this.drawCustomFacing(ctx, image, frame * frameW, 0, frameW, image.naturalHeight, x, y, this.w, this.h);
+            return;
+          }
+        }
         if (this.kind === "koopa" && koopaSheet.complete && koopaSheet.naturalWidth > 0) {
           if (this.shell) {
             const shellFrames = [265, 284, 303, 322];
@@ -149,8 +196,8 @@ class Enemy {
           ctx.drawImage(sprite, x - 1, y + this.h - 25, 28, 28);
           return;
         }
-        if (this.kind === "hopper") {
-          if (rugbySheet.complete && rugbySheet.naturalWidth > 0) {
+        if (this.kind === "Chargin_Chuck") {
+          if (charginChuckSheet.complete && charginChuckSheet.naturalWidth > 0) {
             if (this.hitAnim > 0) {
               const hitFrames = [
                 { x: 125, y: 110, w: 24, h: 15 },
@@ -160,11 +207,11 @@ class Enemy {
                 { x: 233, y: 103, w: 24, h: 22 }
               ];
               const frame = hitFrames[Math.floor(performance.now() / 90) % hitFrames.length];
-              this.drawSheetFacing(ctx, rugbySheet, frame.x, frame.y, frame.w, frame.h, x - 4, y - 4, 40, 30);
+              this.drawSheetFacing(ctx, charginChuckSheet, frame.x, frame.y, frame.w, frame.h, x - 4, y - 4, 40, 30);
               return;
             }
             if (!this.onGround) {
-              this.drawSheetFacing(ctx, rugbySheet, 5, 98, 28, 27, x - 4, y - 8, 40, 42);
+              this.drawSheetFacing(ctx, charginChuckSheet, 5, 98, 28, 27, x - 4, y - 8, 40, 42);
             } else {
               const prepFrames = [
                 { x: 346, y: 43, w: 24, h: 24 },
@@ -179,32 +226,28 @@ class Enemy {
               let frame = runFrames[Math.floor(performance.now() / 130) % runFrames.length];
               if (this.jumpClock < .12) frame = { x: 67, y: 11, w: 24, h: 23 };
               else if (this.jumpClock < .42) frame = prepFrames[Math.floor(performance.now() / 150) % prepFrames.length];
-              this.drawSheetFacing(ctx, rugbySheet, frame.x, frame.y, frame.w, frame.h, x - 4, y - 6, 40, 38);
+              this.drawSheetFacing(ctx, charginChuckSheet, frame.x, frame.y, frame.w, frame.h, x - 4, y - 6, 40, 38);
             }
             return;
           }
-          ctx.fillStyle = "#1fb6a6";
-          ctx.fillRect(x + 3, y + 9, 18, 17);
-          ctx.fillStyle = "#8ff0d3";
-          ctx.fillRect(x + 6, y + 2, 12, 9);
-          ctx.fillStyle = "#0b2831";
-          ctx.fillRect(x + 8, y + 6, 3, 3);
-          ctx.fillRect(x + 15, y + 6, 3, 3);
-          ctx.fillStyle = "#f7c548";
-          ctx.fillRect(x, y + 23, 8, 5);
-          ctx.fillRect(x + 16, y + 23, 8, 5);
           return;
         }
-        ctx.fillStyle = "#7d3c98";
-        ctx.fillRect(x + 2, y + 7, 22, 15);
-        ctx.fillStyle = "#b565d9";
-        ctx.fillRect(x + 5, y + 3, 16, 8);
-        ctx.fillStyle = "#f7f1d4";
-        ctx.fillRect(x + 7, y + 8, 4, 4);
-        ctx.fillRect(x + 16, y + 8, 4, 4);
-        ctx.fillStyle = "#141414";
-        ctx.fillRect(x + 8, y + 9, 2, 2);
-        ctx.fillRect(x + 17, y + 9, 2, 2);
+      }
+
+      drawCustomFacing(ctx, image, sx, sy, sw, sh, x, y, w, h) {
+        const spriteFacing = this.customAsset?.mob?.spriteFacing || "left";
+        const movingRight = this.vx >= 0 || this.shell;
+        const spriteFacesRight = spriteFacing === "right";
+        const shouldFlip = movingRight !== spriteFacesRight;
+        if (!shouldFlip) {
+          ctx.drawImage(image, sx, sy, sw, sh, x, y, w, h);
+          return;
+        }
+        ctx.save();
+        ctx.translate(x + w, y);
+        ctx.scale(-1, 1);
+        ctx.drawImage(image, sx, sy, sw, sh, 0, 0, w, h);
+        ctx.restore();
       }
     }
 
@@ -250,11 +293,6 @@ class Enemy {
         const y = Math.round(this.y - camera.y);
         if (itemSheet.complete && itemSheet.naturalWidth > 0) {
           ctx.drawImage(itemSheet, 0, 0, ITEM_FRAME, ITEM_FRAME, x, y, 24, 24);
-        } else {
-          ctx.fillStyle = "#d82d2d";
-          ctx.fillRect(x + 2, y + 2, 20, 10);
-          ctx.fillStyle = "#f7f1d4";
-          ctx.fillRect(x + 5, y + 12, 14, 10);
         }
       }
     }
